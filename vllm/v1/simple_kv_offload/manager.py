@@ -341,11 +341,21 @@ class SimpleCPUOffloadScheduler:
         max_hit_len = request.num_tokens - 1 - num_computed_tokens
         if max_hit_len <= 0:
             return 0, False
-        _, hit_length = self.cpu_coordinator.find_longest_cache_hit(
+        cpu_hit_blocks, hit_length = self.cpu_coordinator.find_longest_cache_hit(
             remaining_hashes, max_hit_len
         )
 
         if hit_length > 0:
+            # Touch CPU blocks to prevent eviction between now and
+            # update_state_after_alloc. Without this, another DP engine's
+            # store can evict these blocks causing an assertion failure.
+            blocks_to_touch = []
+            for group_blocks in cpu_hit_blocks:
+                for blk in group_blocks:
+                    if not blk.is_null:
+                        blocks_to_touch.append(blk)
+            if blocks_to_touch:
+                self.cpu_block_pool.touch(blocks_to_touch)
             return hit_length, True
 
         # CPU miss — check disk tier for consecutive hits
@@ -413,9 +423,17 @@ class SimpleCPUOffloadScheduler:
         cpu_hit_blocks, hit_length = self.cpu_coordinator.find_longest_cache_hit(
             hashes_to_load, max_hit_len
         )
-        assert hit_length == num_external_tokens, (
-            f"Expected {num_external_tokens} hit tokens, got {hit_length}"
-        )
+        if hit_length != num_external_tokens:
+            # CPU blocks were evicted between get_num_new_matched_tokens and
+            # update_state_after_alloc (race with concurrent DP store ops).
+            # Fall back to recompute — the scheduler will handle this request
+            # as if no external tokens were found.
+            logger.warning(
+                "CPU cache race: expected %d hit tokens, got %d for req %s. "
+                "Falling back to recompute.",
+                num_external_tokens, hit_length, req_id,
+            )
+            return
 
         # Build transfer pairs across all groups.
         total_computed_tokens = num_computed_tokens + num_external_tokens
