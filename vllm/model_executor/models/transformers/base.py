@@ -214,9 +214,10 @@ class Base(
         self.config.dtype = torch.get_default_dtype()
         # TODO(hmellor): Remove this when Transformers v4 support is dropped
         for sub_config_name in getattr(self.config, "sub_configs", {}):
-            sub_config = getattr(self.config, sub_config_name)
-            if sub_config.dtype != (dtype := self.config.dtype):
-                sub_config.dtype = dtype
+            sub_config = getattr(self.config, sub_config_name, None)
+            if sub_config is not None and hasattr(sub_config, 'dtype'):
+                if sub_config.dtype != (dtype := self.config.dtype):
+                    sub_config.dtype = dtype
 
     def _create_hf_to_vllm_mapper(self):
         """
