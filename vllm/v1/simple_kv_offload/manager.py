@@ -426,12 +426,17 @@ class SimpleCPUOffloadScheduler:
         if hit_length != num_external_tokens:
             # CPU blocks were evicted between get_num_new_matched_tokens and
             # update_state_after_alloc (race with concurrent DP store ops).
-            # Fall back to recompute — the scheduler will handle this request
-            # as if no external tokens were found.
+            # Reset external token count to avoid reading garbage from
+            # uninitialized GPU blocks. The request will recompute these
+            # tokens via normal prefill instead.
             logger.warning(
                 "CPU cache race: expected %d hit tokens, got %d for req %s. "
-                "Falling back to recompute.",
+                "Resetting to recompute.",
                 num_external_tokens, hit_length, req_id,
+            )
+            request.num_external_computed_tokens = 0
+            request.num_computed_tokens = max(
+                0, request.num_computed_tokens - num_external_tokens
             )
             return
 
